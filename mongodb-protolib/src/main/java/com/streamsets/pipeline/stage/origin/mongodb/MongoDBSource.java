@@ -15,8 +15,13 @@
  */
 package com.streamsets.pipeline.stage.origin.mongodb;
 
+import com.google.common.base.Strings;
+import com.mongodb.BasicDBObject;
 import com.mongodb.CursorType;
 import com.mongodb.MongoClientException;
+import com.mongodb.client.FindIterable;
+import com.mongodb.client.MongoCursor;
+import com.mongodb.client.MongoIterable;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Sorts;
 import com.streamsets.pipeline.api.BatchMaker;
@@ -27,7 +32,11 @@ import com.streamsets.pipeline.lib.util.ThreadUtil;
 import com.streamsets.pipeline.stage.common.mongodb.Errors;
 import com.streamsets.pipeline.stage.common.mongodb.Groups;
 import com.streamsets.pipeline.stage.common.mongodb.MongoDBConfig;
+import org.bson.BsonArray;
+import org.bson.BsonDocument;
+import org.bson.BsonValue;
 import org.bson.Document;
+import org.bson.conversions.Bson;
 import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +44,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -44,6 +55,7 @@ public class MongoDBSource extends AbstractMongoDBSource {
 
   private ObjectId initialObjectId;
   private String initialId; // Used only when Offset Field is String type
+  private List<Bson> query=new ArrayList<>();
 
   public MongoDBSource(MongoSourceConfigBean configBean) {
     super(configBean);
@@ -81,6 +93,39 @@ public class MongoDBSource extends AbstractMongoDBSource {
             )
         );
       }
+    }
+    try {
+      switch (configBean.queryType) {
+        case AGGREGATE:
+          for (BsonValue value :  BsonArray.parse(configBean.query)) {
+            query.add(value.asDocument());
+          }
+          break;
+        case FIND:
+          if (!Strings.isNullOrEmpty(configBean.query)) {
+            query.add(BsonDocument.parse(configBean.query));
+          }
+          break;
+        default:
+          issues.add(
+                  getContext().createConfigIssue(
+                          Groups.MONGODB.name(),
+                          MongoDBConfig.CONFIG_PREFIX + "queryType",
+                          Errors.MONGODB_21,
+                          configBean.queryType
+                  )
+          );
+      }
+    } catch (RuntimeException e) {
+      issues.add(
+          getContext().createConfigIssue(
+             Groups.MONGODB.name(),
+             MongoDBConfig.CONFIG_PREFIX + "query",
+             Errors.MONGODB_20,
+             configBean.query,
+             e.getMessage()
+          )
+      );
     }
     return issues;
   }
@@ -175,7 +220,17 @@ public class MongoDBSource extends AbstractMongoDBSource {
 
     return parseSourceOffset((Document)doc.get(keys[i]), keys, i+1);
   }
-
+  private MongoIterable<Document> createCursor() {
+    if (configBean.queryType == QueryType.AGGREGATE) {
+      return mongoCollection.aggregate(query);
+    } else {
+      if (query.isEmpty()) {
+        return mongoCollection.find();
+      } else {
+        return mongoCollection.find(query.get(0));
+      }
+    }
+  }
   private void prepareCursor(int maxBatchSize, String offsetField, String lastSourceOffset) {
     String stringOffset = "";
     ObjectId objectIdOffset = null;
@@ -189,33 +244,27 @@ public class MongoDBSource extends AbstractMongoDBSource {
         else
           objectIdOffset = new ObjectId(lastSourceOffset);
       }
-      LOG.debug("Getting new cursor with params: {} {} {}",
-          maxBatchSize,
-          offsetField,
-          configBean.offsetType == OffsetFieldType.STRING ? stringOffset : objectIdOffset);
+      LOG.debug("Getting new cursor with params: {} {} {} {}",
+              maxBatchSize,
+              offsetField,
+              configBean.offsetType == OffsetFieldType.STRING ? stringOffset : objectIdOffset,
+              query);
 
-      if (configBean.isCapped) {
-        cursor = mongoCollection
-            .find()
-            .filter(Filters.gt(
-                offsetField,
-                configBean.offsetType == OffsetFieldType.STRING ?  stringOffset : objectIdOffset
-            ))
-            .cursorType(CursorType.TailableAwait)
-            .batchSize(maxBatchSize)
-            .iterator();
-      } else {
-        cursor = mongoCollection
-            .find()
-            .filter(Filters.gt(
-                offsetField,
-                configBean.offsetType == OffsetFieldType.STRING ? stringOffset : objectIdOffset
-            ))
-            .sort(Sorts.ascending(offsetField))
-            .cursorType(CursorType.NonTailable)
-            .batchSize(maxBatchSize)
-            .iterator();
+      if (configBean.queryType == QueryType.AGGREGATE) {
+        cursor = mongoCollection.aggregate(query).iterator();
+      } else{
+          FindIterable<Document> find=createFindIterable()
+                  .filter(Filters.gt(
+                    offsetField,
+                    configBean.offsetType == OffsetFieldType.STRING ? stringOffset : objectIdOffset)
+          );
+          cursor = configBean.isCapped ?
+                  find.cursorType(CursorType.TailableAwait).batchSize(maxBatchSize).iterator() :
+                  find.sort(Sorts.ascending(offsetField)).cursorType(CursorType.NonTailable).batchSize(maxBatchSize).iterator();
       }
     }
+  }
+  private FindIterable<Document> createFindIterable() {
+    return query.isEmpty()?mongoCollection.find():mongoCollection.find(query.get(0));
   }
 }

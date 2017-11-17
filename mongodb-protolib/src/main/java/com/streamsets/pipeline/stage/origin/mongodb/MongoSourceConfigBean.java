@@ -62,15 +62,37 @@ public class MongoSourceConfigBean {
   public OffsetFieldType offsetType;
 
   @ConfigDef(
-      required = true,
-      type = ConfigDef.Type.STRING,
-      defaultValue = "_id",
-      label = "Offset Field",
-      description = "Field checked to track current offset.",
-      displayPosition = 1010,
-      group = "MONGODB"
+          required = true,
+          type = ConfigDef.Type.STRING,
+          defaultValue = "_id",
+          label = "Offset Field",
+          description = "Field checked to track current offset.",
+          displayPosition = 1004,
+          group = "MONGODB"
   )
   public String offsetField;
+
+  @ConfigDef(
+          required = false,
+          type = ConfigDef.Type.STRING,
+          label = "Query",
+          description = "A query (in JSON format) to execute.",
+          displayPosition = 1005,
+          group = "MONGODB"
+  )
+  public String query;
+
+  @ConfigDef(
+          required = false,
+          type = ConfigDef.Type.MODEL,
+          defaultValue = "FIND",
+          label = "Query Type",
+          description = "The type of query to perform.",
+          displayPosition = 1006,
+          group = "MONGODB"
+  )
+  @ValueChooserModel(QueryTypeChooserValues.class)
+  public QueryType queryType;
 
   @ConfigDef(
       type = ConfigDef.Type.NUMBER,
